@@ -1,0 +1,68 @@
+---
+title: "plots"
+author: "Meng Yuan"
+date: "2022/4/29"
+output: html_document
+---
+
+Total movie ratings per genre
+```{r}
+genre_rating <- split_edx%>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+```
+
+Ratings distribution
+```{r}
+vec_ratings <- as.vector(edx$rating)
+unique(vec_ratings) 
+##  [1] 5.0 3.0 2.0 4.5 3.5 4.0 1.0 1.5 2.5 0.5
+vec_ratings <- vec_ratings[vec_ratings != 0]
+vec_ratings <- factor(vec_ratings)
+qplot(vec_ratings) +
+  ggtitle("Ratings' Distribution")
+```
+The distribution of each user’s ratings for movies. This shows the users bias
+```{r} 
+edx %>% count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Users")
+```
+Some movies are rated more often than others.Below is their distribution. This explores movie biases.
+```{r} 
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Movies")
+```
+ Genres popularity per year. Here we tackle the issue of temporal evolution of users taste over different popular genre.
+```{r} 
+genres_popularity <- split_edx %>%
+  na.omit() %>% # omit missing values
+  select(movieId, year, genres) %>% # select columns we are interested in
+  mutate(genres = as.factor(genres)) %>% # turn genres in factors
+  group_by(year, genres) %>% # group data by year and genre
+  summarise(number = n()) %>% # count
+  complete(year = full_seq(year, 1), genres, fill = list(number = 0)) # add missing years/genres
+# Genres vs year; 4 genres are chosen for readability: animation, sci-fi, war and western movies.
+genres_popularity %>%
+  filter(year > 1930) %>%
+  filter(genres %in% c("War", "Sci-Fi", "Animation", "Western")) %>%
+  ggplot(aes(x = year, y = number)) +
+  geom_line(aes(color=genres)) +
+  scale_fill_brewer(palette = "Paired") 
+```
+ Rating vs release year. Here, a general trend of movie viewers and their rating habits can be explored.    
+```{r} 
+edx %>% group_by(year) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(year, rating)) +
+  geom_point() +
+  geom_smooth()
+## `geom_smooth()` using method = 'loess' and formula 'y ~ x'
+```
