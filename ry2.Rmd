@@ -1,0 +1,721 @@
+---
+title: '2.0'
+author: "Meng Yuan"
+date: "2022/4/29"
+output: html_document
+---
+
+### set up the envoriment
+```{r}
+setwd("D:/econ695_data/project") # Set the work dictionary
+
+library(knitr)
+library(dplyr)
+library(stargazer)
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(caret)
+library(tidyverse)
+library(h2o)
+library(tidyr)
+```
+
+### import the dataset
+```{r}
+#movies<- read.csv("movies.csv")
+#ratings<- read.csv("ratings.csv")
+
+ratings <- fread(text = gsub("::", "\t", readLines("ratings.dat")), 
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines("movies.dat"), "\\::", 3)
+
+
+
+
+movies <- as.data.frame(movies) 
+colnames(movies) <- c("movieId", "title", "genres")
+
+transform(movies, movieId = as.numeric(levels(movieId))[movieId],
+          title = as.character(title), genres = as.character(genres))
+movies$movieId <- c(1:nrow(movies))
+
+#sapply(movies, class)
+#sapply(ratings, class)
+
+MovieLens_0 <- left_join(ratings, movies, by = "movieId")
+MovieLens_0 <- na.omit(MovieLens_0)
+```
+
+```{r}
+MovieLens <- MovieLens_0 %>% mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", tz = "GMT"))
+MovieLens$timestamp <- format(MovieLens$timestamp, "%Y")
+names(MovieLens)[4] <- "year_rated"
+MovieLens<- MovieLens %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
+```
+
+
+### Data Preprocessing
+```{r}
+set.seed(1)
+
+n = dim( MovieLens )[1]
+ti= sample( 1:n, n/10 )
+#<- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+
+train_m <- MovieLens[-ti,]
+test_m <- MovieLens[ti,]
+
+# To make sure we don’t include users and movies in the test set that do not appear in the training set, we remove these entries using the semi_join function:
+
+validation <- test_m %>% 
+  semi_join(train_m, by = "movieId") %>% 
+  semi_join(train_m, by = "userId")
+
+# Add rows removed from 'validation' set back into train set
+
+removed_m <- anti_join(test_m, validation)
+train_m <- rbind(train_m, removed_m)
+
+```
+
+```{r}
+# validation_CM <- validation  
+# validation <- validation %>% select(-rating)
+
+# lets modify the columns to suitable formats that can be further used for analysis
+# Modify the year as a column in the train_m & validation datasets
+# train_m <- train_m %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
+# validation <- validation %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
+# validation_CM <- validation_CM %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
+
+# Modify the genres variable in the train_m & validation dataset (column separated)
+split_train  <- train_m  %>% separate_rows(genres, sep = "\\|")
+split_valid <- validation   %>% separate_rows(genres, sep = "\\|")
+# split_valid_CM <- validation_CM  %>% separate_rows(genres, sep = "\\|")
+```
+
+
+```{r}
+n2 = dim(train_m)[1]
+ti2= sample( 1:n2, n2/2 )
+train.x <- train_m[-ti2,]
+test_n <- train_m[ti2,]
+
+# To make sure we don’t include users and movies in the test set that do not appear in the training set, we remove these entries using the semi_join function:
+
+test.x <- test_n %>% 
+  semi_join(train.x, by = "movieId") %>%
+  semi_join(train.x, by = "userId")
+
+# Add rows removed from test set back into train set
+
+removed_n <- anti_join(test_n, test.x)
+train.x <- rbind(train.x, removed_n)
+
+```
+
+```{r}
+n3 = dim(split_train)[1]
+ti3= sample( 1:n3, n3/2 )
+split_train.x <- split_train[-ti3,]
+split_test_n <- split_train[ti3,]
+
+# To make sure we don’t include users and movies in the test set that do not appear in the training set, we remove these entries using the semi_join function:
+
+split_test.x <- split_test_n %>% 
+  semi_join(split_train.x, by = "movieId") %>%
+  semi_join(split_train.x, by = "userId")
+
+# Add rows removed from test set back into train set
+
+removed_n2 <- anti_join(split_test_n, split_test.x)
+split_train.x <- rbind(split_train.x, removed_n2)
+
+```
+
+```{r}
+train.x <- na.omit(train.x)
+test.x <- na.omit(test.x)
+validation <- na.omit(validation)
+```
+
+
+################
+## PLOT       ##
+################
+
+
+Total movie ratings per genre
+```{r}
+genre_rating <- split_train%>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+```
+
+Ratings distribution
+```{r}
+vec_ratings <- as.vector(train_m$rating)
+unique(vec_ratings) 
+##  [1] 5.0 3.0 2.0 4.5 3.5 4.0 1.0 1.5 2.5 0.5
+vec_ratings <- vec_ratings[vec_ratings != 0]
+vec_ratings <- factor(vec_ratings)
+qplot(vec_ratings, colour="black",fill='steelblue') +
+  ggtitle("Ratings' Distribution") + theme_economist_white()
+#  pdf('rating distribution.pdf',width = 14, height = 9)
+```
+
+
+The distribution of each user’s ratings for movies. This shows the users bias
+```{r} 
+train_m %>% count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black",fill='steelblue') + 
+  scale_x_log10() + 
+  ggtitle("Users rating for movies") + theme_economist()+
+  pdf('user distribution 2.pdf',width = 14, height = 8)
+```
+Some movies are rated more often than others.Below is their distribution. This explores movie biases.
+```{r} 
+train_m %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black",fill='steelblue') + 
+  scale_x_log10() + 
+  ggtitle("Movies Distribution")  + theme_economist()+
+  pdf('movie distribution.pdf',width = 14, height = 8)
+```
+ Genres popularity per year. Here we tackle the issue of temporal evolution of users taste over different popular genre.
+```{r} 
+genres_popularity <- split_train %>%
+  na.omit() %>% # omit missing values
+  select(movieId, year, genres) %>% # select columns we are interested in
+  mutate(genres = as.factor(genres)) %>% # turn genres in factors
+  group_by(year, genres) %>% # group data by year and genre
+  summarise(number = n()) %>% # count
+#  complete(year = tidyr::full_seq(year, 1), genres, fill = list(number = 0)) # add missing years/genres
+# Genres vs year; 4 genres are chosen for readability: animation, sci-fi, war and western movies.
+genres_popularity %>%
+  filter(year > 1930) %>%
+  filter(genres %in% c("War", "Sci-Fi", "Animation", "Western")) %>%
+  ggplot(aes(x = year, y = number)) +
+  geom_line(aes(color=genres)) +
+  scale_fill_brewer(palette = "Paired") 
+#+  pdf('gemres per year.pdf',width = 14, height = 8)
+```
+ Rating vs release year. Here, a general trend of movie viewers and their rating habits can be explored.    
+```{r} 
+train_m %>% group_by(year) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(year, rating), color = "black",fill='lavenderblush3') +
+  geom_point() +
+  geom_smooth() +
+  pdf('rating vs release year.pdf',width = 14, height = 8)
+## `geom_smooth()` using method = 'loess' and formula 'y ~ x'
+
+```
+
+
+#################################
+## MODEL 
+#################################
+
+```{r}
+# Define Root Mean Squared Error (RMSE)
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2,na.rm= TRUE))
+}
+```
+
+# linear regression 1
+# A model that assumes the same rating for all movies and users with all the differences explained by random variation
+```{r}
+# train.x %>% select(rating) %>%summary()
+
+mu_0<- mean(train.x$rating,na.rm= TRUE)
+
+rmse_LR1 <- RMSE(test.x$rating, mu_0)
+results <- tibble(Method = "Model 1: Simply the mean", RMSE = rmse_LR1)
+#results %>% knitr::kable()
+# stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results1.doc")
+```
+# linear regression 2
+# Our first model can be improved on by taking into account movie bias. We know from experience, and data confirms this, that some movies are more popular than others and receive higher ratings.
+
+```{r}
+bi <- train.x %>% 
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu_0,na.rm= TRUE))
+
+predicted_ratings2 <- mu_0 + test.x %>%
+  left_join(bi, by = "movieId") %>%
+  pull(b_i)
+rmse_LR2 <- RMSE(predicted_ratings2, test.x$rating)
+results <- bind_rows(results, tibble(Method = "Model 2: Mean + movie bias", RMSE = rmse_LR2))
+#results %>% knitr::kable()
+# stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results2.doc")
+```
+
+
+# linear regression 3
+# Bias can be found in users as well. Some tend to rate more positively and others negatively.
+```{r}
+bu <- train.x %>%
+  left_join(bi, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu_0 - b_i,na.rm= TRUE))
+
+predicted_ratings3 <- test.x %>%
+  left_join(bi, by = "movieId") %>%
+  left_join(bu, by = "userId") %>%
+  mutate(pred = mu_0 + b_i + b_u) %>%
+  pull(pred)
+rmse_LR3 <- RMSE(predicted_ratings3, test.x$rating)
+results <- bind_rows(results, tibble(Method = "Model 3: Mean + movie bias + user effect", RMSE = rmse_LR3))
+#results %>% knitr::kable()
+# stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results3.doc")
+```
+
+
+#################
+## model plots ##
+#################
+
+```{r}
+user_avgs_norm <- train.x %>% 
+  left_join(movie_avgs_norm, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu_0 - b_i))
+user_avgs_norm %>% 
+  qplot(b_u, geom ="histogram", bins = 30, data = ., color = I("black"))+ 
+  pdf('bu plot.pdf',width = 14, height = 8)
+
+```
+
+
+```{r}
+library(ggthemes)
+train.x %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating)) %>%
+  filter(n()>=100) %>%
+  ggplot(aes(b_u)) +
+  ggtitle("User Effect Distribution") +
+  geom_histogram(bins=30,color = "black" ,fill = "steelblue") +
+  xlab("User Bias") +
+  ylab("Count") +
+  theme_economist()+ 
+  pdf('bu plot 2.pdf',width = 14, height = 8)
+
+
+```
+
+```{r}
+bi %>% ggplot(aes(x = b_i)) +
+  geom_histogram(bins=30, color = "black" ,fill = "steelblue") +
+  ggtitle("Movie Effect Distribution") +
+  xlab("Movie effect") +
+  ylab("Count") +
+  theme_economist()
+
+#+ pdf('bi plot 2.pdf',width = 14, height = 8)
+
+```
+
+```{r}
+movie_avgs_norm <- train.x %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_0))
+
+movie_avgs_norm %>% qplot(b_i, geom ="histogram", bins = 20, data = ., color = I("black")) + pdf('bi plot.pdf',width = 14, height = 8)
+```
+
+
+#################
+# regulization  #
+#################
+
+```{r}
+# lambda is a tuning parameter
+# Use cross-validation to choose it.
+lambdas <- seq(0, 10, 0.25)
+# For each lambda,find b_i & b_u, followed by rating prediction & testing
+# note:the below code could take some time 
+rmses <- sapply(lambdas, function(l){
+  
+  mu_0 <- mean(train.x$rating)
+  
+  b_i <- train.x %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu_0)/(n()+l))
+  
+  b_u <- train.x %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu_0)/(n()+l))
+  
+  predicted_ratings <- test.x %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu_0 + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(test.x$rating,predicted_ratings))
+})
+```
+
+```{r}
+lambda <- lambdas[which.min(rmses)]
+lambda
+
+# Compute regularized estimates of b_i using lambda
+movie_avgs_reg <- train.x %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu_0)/(n()+lambda), n_i = n())
+# Compute regularized estimates of b_u using lambda
+user_avgs_reg <- train.x %>% 
+  left_join(movie_avgs_reg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu_0 - b_i)/(n()+lambda), n_u = n())
+# Predict ratings
+predicted_ratings_reg <- test.x %>% 
+  left_join(movie_avgs_reg, by='movieId') %>%
+  left_join(user_avgs_reg, by='userId') %>%
+  mutate(pred = mu_0 + b_i + b_u) %>% 
+  .$pred
+# Test and save results
+rmse_reg1 <- RMSE(test.x$rating,predicted_ratings_reg)
+results <- bind_rows(results,
+                          data_frame(Method="Regularized Movie and User Effect Model",  
+                                     RMSE = rmse_reg1 ))
+#results %>% knitr::kable()
+#stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results4.doc")
+```
+
+# regulization2
+```{r}
+# b_y and b_g represent the year & genre effects, respectively
+lambdas2 <- seq(0, 20, 1)
+# Note: the below code could take some time 
+rmses2 <- sapply(lambdas2, function(l){
+  
+  mu_0 <- mean(train.x$rating)
+  
+  b_i <- split_train.x %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu_0)/(n()+l))
+  
+  b_u <- split_train.x %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu_0)/(n()+l))
+  
+  b_y <- split_train.x %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu_0 - b_i - b_u)/(n()+lambda), n_y = n())
+  
+  b_g <- split_train.x %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    left_join(b_y, by = 'year') %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - mu_0 - b_i - b_u - b_y)/(n()+lambda), n_g = n())
+    predicted_ratings <- split_test.x %>% 
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    left_join(b_y, by = 'year') %>%
+    left_join(b_g, by = 'genres') %>%
+    mutate(pred = mu_0 + b_i + b_u + b_y + b_g) %>% 
+    .$pred
+  
+  return(RMSE(split_test.x$rating,predicted_ratings))
+})
+# Compute new predictions using the optimal lambda
+```
+
+```{r}
+lambda_2 <- lambdas2[which.min(rmses2)]
+lambda_2
+
+movie_reg_avgs_2 <- split_train.x %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu_0)/(n()+lambda_2), n_i = n())
+user_reg_avgs_2 <- split_train.x %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu_0 - b_i)/(n()+lambda_2), n_u = n())
+year_reg_avgs <- split_train.x %>%
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  group_by(year) %>%
+  summarize(b_y = sum(rating - mu_0 - b_i - b_u)/(n()+lambda_2), n_y = n())
+genre_reg_avgs <- split_train.x %>%
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  left_join(year_reg_avgs, by = 'year') %>%
+  group_by(genres) %>%
+  summarize(b_g = sum(rating - mu_0 - b_i - b_u - b_y)/(n()+lambda_2), n_g = n())
+predicted_ratings <- split_test.x %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  left_join(year_reg_avgs, by = 'year') %>%
+  left_join(genre_reg_avgs, by = 'genres') %>%
+  mutate(pred = mu_0 + b_i + b_u + b_y + b_g) %>% 
+  .$pred
+rmse_reg2 <- RMSE(split_test.x$rating,predicted_ratings)
+results <- bind_rows(results,
+                          data_frame(Method="Reg Movie, User, Year, and Genre Effect Model",  
+                                     RMSE = rmse_reg2 ))
+# results %>% knitr::kable()
+#stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results5.doc")
+```
+
+```{r}
+gen_avgs_norm <- split_test.x %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  left_join(year_reg_avgs, by = 'year') %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu_0 - b_i - b_u - b_y))
+
+gen_avgs_norm %>% 
+  qplot(b_g, geom ="histogram", bins = 30, data = ., color = I("black"))+ 
+  pdf('bg plot.pdf',width = 14, height = 8)
+
+
+  
+ye_avgs_norm <- split_test.x %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  group_by(year) %>%
+  summarize(b_y = mean(rating - mu_0 - b_i - b_u))
+
+ye_avgs_norm %>% 
+  qplot(b_y, geom ="histogram", bins = 30, data = ., color = I("black"))+ 
+  pdf('by plot.pdf',width = 14, height = 8)
+  
+```
+
+
+random forest
+```{r}
+h2o.init()
+h2o_train.x <- as.h2o(split_train.x)
+h2o_test.x <- as.h2o(split_test.x)
+h2o_valid <- as.h2o(split_valid)
+
+
+Random_Forest1 <- h2o.randomForest( x = c("movieId","userId","year") ,    
+                            y = "rating" ,         # Dependent var  
+                            training_frame = h2o_train.x,        ## the H2O frame for training  
+                            validation_frame = h2o_test.x, # the testing frame NOT the real validation!!  
+                            model_id = "Random_Forest1",    ## name the model ID so you can load it afterwards   in R and in h2o  
+                            ntrees = 50,                  ## numb of  maximum trees to use.The default   is 50  
+                            max_depth = 30,  
+                            keep_cross_validation_predictions= TRUE, # i recommend to use cross   validation  
+                            min_rows = 100, # min rows during training,you can add the early stopping criteria decide when to stop fitting new trees
+                            score_each_iteration = T,      ## Predict against training and validation   for each tree. Default will skip several.  
+                            nfolds = 3,  
+                            fold_assignment = "AUTO",  
+                            seed = 1)   
+
+# forest <- h2o.randomForest(x_n, y_n, traindata, mtries = 2, ntrees = 2000)
+
+```
+
+```{r}
+h2o.varimp_plot(Random_Forest1, num_of_features = NULL)
+
+#+ pdf('rf plot.pdf',width = 8, height = 14)
+```
+
+```{r}
+#stargazer(Random_Forest1, summary = FALSE, type="html", title = "Summary of RF" ,rownames = FALSE,out = "rf.doc")
+
+
+h2o.performance(Random_Forest1, h2o_test.x)
+pred.ratings.rf <- h2o.predict(Random_Forest1,as.h2o(h2o_test.x))
+rmse_rf <- RMSE(pred.ratings.rf, as.h2o(h2o_test.x$rating));
+
+results <- bind_rows(results,
+                          data_frame(Method="Random Forest Model",  
+                                     RMSE = rmse_rf ))
+
+stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results6.doc")
+
+```
+
+```{r}
+library(mixtools)
+wait = faithful$waiting
+mixmdl = normalmixEM(wait)
+plot.new()
+plot.window(xlim= c(-5,55), ylim=c(0.8,1.1))
+plot(Random_Forest1, add = TRUE)
+#+ pdf('rf2 plot.pdf',width = 14, height = 8)
+```
+
+
+```{r}
+# summary(MovieLens)
+stargazer(MovieLens, summary = TRUE, type="html", title = "Summary of MovieLens" ,rownames = FALSE,out = "movielenssum.doc")
+
+head <-MovieLens[sample(nrow(MovieLens),5),]
+stargazer(head, summary = FALSE, type="html", title = "Head Line of MovieLens" ,rownames = FALSE,out = "headmovielens2.doc")
+stargazer(train_m, summary = TRUE, type="html", title = "Summary of MovieLens" ,rownames = FALSE,out = "movielenssum2.doc")
+
+stargazer(split_train,type="text", summary = FALSE, title = "Summary of MovieLens" ,rownames = FALSE,out = "movielenssum3.txt")
+sink("a.txt")
+summary(split_train)
+sink()
+```
+
+
+#####################
+##final validation ##
+#####################
+```{r}
+# lambda is a tuning parameter
+# Use cross-validation to choose it.
+lambdas <- seq(0, 10, 0.25)
+# For each lambda,find b_i & b_u, followed by rating prediction & testing
+# note:the below code could take some time 
+rmses <- sapply(lambdas, function(l){
+  
+  mu_0 <- mean(train.x$rating)
+  
+  b_i <- train.x %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu_0)/(n()+l))
+  
+  b_u <- train.x %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu_0)/(n()+l))
+  
+  predicted_ratings <- validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu_0 + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(validation$rating,predicted_ratings))
+})
+```
+
+```{r}
+lambda <- lambdas[which.min(rmses)]
+lambda
+
+# Compute regularized estimates of b_i using lambda
+movie_avgs_reg <- train.x %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu_0)/(n()+lambda), n_i = n())
+# Compute regularized estimates of b_u using lambda
+user_avgs_reg <- train.x %>% 
+  left_join(movie_avgs_reg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu_0 - b_i)/(n()+lambda), n_u = n())
+# Predict ratings
+predicted_ratings_reg <- validation %>% 
+  left_join(movie_avgs_reg, by='movieId') %>%
+  left_join(user_avgs_reg, by='userId') %>%
+  mutate(pred = mu_0 + b_i + b_u) %>% 
+  .$pred
+# Test and save results
+rmse_reg1 <- RMSE(validation$rating,predicted_ratings_reg)
+results <- bind_rows(results,
+                          data_frame(Method="Regularized Movie and User Effect Model",  
+                                     RMSE = rmse_reg1 ))
+#results %>% knitr::kable()
+stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results-validation1.doc")
+```
+
+# regulization2
+```{r}
+# b_y and b_g represent the year & genre effects, respectively
+lambdas2 <- seq(0, 20, 1)
+# Note: the below code could take some time 
+rmses2 <- sapply(lambdas2, function(l){
+  
+  mu_0 <- mean(train.x$rating)
+  
+  b_i <- split_train.x %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu_0)/(n()+l))
+  
+  b_u <- split_train.x %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu_0)/(n()+l))
+  
+  b_y <- split_train.x %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu_0 - b_i - b_u)/(n()+lambda), n_y = n())
+  
+  b_g <- split_train.x %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    left_join(b_y, by = 'year') %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - mu_0 - b_i - b_u - b_y)/(n()+lambda), n_g = n())
+    predicted_ratings <- split_test.x %>% 
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    left_join(b_y, by = 'year') %>%
+    left_join(b_g, by = 'genres') %>%
+    mutate(pred = mu_0 + b_i + b_u + b_y + b_g) %>% 
+    .$pred
+  
+  return(RMSE(split_valid$rating,predicted_ratings))
+})
+# Compute new predictions using the optimal lambda
+```
+
+```{r}
+lambda_2 <- lambdas2[which.min(rmses2)]
+lambda_2
+
+movie_reg_avgs_2 <- split_train.x %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu_0)/(n()+lambda_2), n_i = n())
+user_reg_avgs_2 <- split_train.x %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu_0 - b_i)/(n()+lambda_2), n_u = n())
+year_reg_avgs <- split_train.x %>%
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  group_by(year) %>%
+  summarize(b_y = sum(rating - mu_0 - b_i - b_u)/(n()+lambda_2), n_y = n())
+genre_reg_avgs <- split_train.x %>%
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  left_join(year_reg_avgs, by = 'year') %>%
+  group_by(genres) %>%
+  summarize(b_g = sum(rating - mu_0 - b_i - b_u - b_y)/(n()+lambda_2), n_g = n())
+predicted_ratings <- split_valid %>% 
+  left_join(movie_reg_avgs_2, by='movieId') %>%
+  left_join(user_reg_avgs_2, by='userId') %>%
+  left_join(year_reg_avgs, by = 'year') %>%
+  left_join(genre_reg_avgs, by = 'genres') %>%
+  mutate(pred = mu_0 + b_i + b_u + b_y + b_g) %>% 
+  .$pred
+rmse_reg2 <- RMSE(split_valid$rating,predicted_ratings)
+results <- bind_rows(results,
+                          data_frame(Method="Reg Movie, User, Year, and Genre Effect Model",  
+                                     RMSE = rmse_reg2 ))
+# results %>% knitr::kable()
+stargazer(results, summary = FALSE, type="html", title = "Summary of RMSE" ,rownames = FALSE,out = "results-validation2.doc")
+```
+
+```{r}
+head0 <-MovieLens_0[sample(nrow(MovieLens_0),5),]
+stargazer(head0, summary = FALSE, type="html", title = "Sample lines of MovieLens" ,rownames = FALSE,out = "sampleline.doc")
+```
